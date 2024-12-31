@@ -11,15 +11,19 @@ func TestKubeDriver(t *testing.T) {
 	var (
 		ns    = randString(8)
 		scope = randString(8)
-		task  = randString(8)
 		conf  = configs.FromMap(map[string]string{
 			configs.KeyNamespace:  ns,
 			configs.KeyLeaseScope: scope,
 		})
+		driver = newKubeDriver(t, conf)
 	)
-	k := kubeDriver(t, conf)
-	r := k.Resource(task)
-	assert.Equal(t, ns, r.Namespace)
-	assert.Equal(t, scope, r.Scope)
-	assert.Equal(t, task, r.Name)
+	t.Run("resource", func(t *testing.T) {
+		var (
+			task = randString(8)
+			r    = driver.Resource(task)
+		)
+		assert.Equal(t, ns, r.Namespace)
+		assert.Equal(t, scope, r.Scope)
+		assert.Equal(t, task, r.Name)
+	})
 }

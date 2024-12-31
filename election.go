@@ -2,52 +2,71 @@ package dsync
 
 import (
 	"context"
+	"fmt"
 )
 
-type Election struct {
-	driver    Driver
-	task      string
-	candidate string // Dsync.instance
-	id        string
-	err       error
-}
+type (
+	Election struct {
+		driver    ElectionDriver
+		candidate string // Dsync.instance
+		err       error
+		resource  Resource
+	}
+	ElectionDriver interface {
+		GetLeader() string
+		IsLeader() bool
+		WhenElected(f func(context.Context))
+		Stop()
+	}
+)
 
+func NewElection(ctx context.Context, d Driver, task, pod string) Election {
+	task = SanitizeName(task)
+	e, err := d.GetElection(ctx, task, pod)
+	return Election{
+		driver:    e,
+		resource:  d.Resource(task),
+		candidate: pod,
+		err:       err,
+	}
+}
 func (e Election) GetLeader() string {
 	if e.Err() != nil {
 		return ""
 	}
-	return e.driver.GetLeader(e.task)
+	return e.driver.GetLeader()
 }
 func (e Election) IsLeader() bool {
 	if e.Err() != nil {
 		return false
 	}
-	return e.driver.IsLeader(e.id)
+	return e.driver.IsLeader()
 }
 func (e Election) WhenElected(f func(context.Context)) {
 	if e.Err() != nil {
 		return
 	}
-	e.driver.WhenElected(e.id, f)
+	e.driver.WhenElected(f)
 }
 func (e Election) Stop() {
 	if e.Err() != nil {
 		return
 	}
-	e.driver.StopElection(e.id)
+	e.driver.Stop()
 }
 func (e Election) Err() error {
 	if err := e.err; err != nil {
 		return err
 	}
-	if err := e.driver.Resource(e.task).Validate(); err != nil {
+	if err := e.resource.Validate(); err != nil {
 		return err
+	}
+	if e.driver == nil {
+		return fmt.Errorf("%w: Election.driver is nil", ErrInvalidState)
 	}
 	return nil
 }
-func (e Election) Resource() Resource {
-	return e.driver.Resource(e.task)
-}
+func (e Election) Resource() Resource { return e.resource }
 
 type Term struct {
 	ctx    context.Context

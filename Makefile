@@ -21,4 +21,7 @@ testAll: lint	## run tests no cache
 	time -p go test -failfast -timeout=30s -count=1 -race ./... | grep -v '\[no test'
 	govulncheck ./...
 
+testV:
+	go test -v -failfast -timeout=30s ./... | grep -v '\[no test'
+
 .PHONY: help lint updateDepts test testAll

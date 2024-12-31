@@ -43,10 +43,6 @@ func NewLeaderElector(
 	candidate string,
 	callbacks ...LeaderCallbacks,
 ) (*Elector, error) {
-	task := r.Name
-	if task == "" {
-		task = dsync.MasterTask
-	}
 	e := Elector{
 		r:         r,
 		candidate: candidate,

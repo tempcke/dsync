@@ -7,21 +7,23 @@ import (
 
 type (
 	Lock struct {
-		ctx      context.Context
-		d        Driver
+		ld       LockDriver
 		resource Resource
-		id       string
 		err      error
+	}
+	LockDriver interface {
+		Lock() error
+		LockContext(ctx context.Context) error
+		Unlock() error
+		TryLock() error
 	}
 )
 
 func NewLock(ctx context.Context, d Driver, name, pod string) Lock {
-	id, err := d.NewLock(ctx, name, pod)
+	lock, err := d.GetLock(ctx, name, pod)
 	return Lock{
-		ctx:      ctx,
-		d:        d,
+		ld:       lock,
 		resource: d.Resource(name),
-		id:       id,
 		err:      err,
 	}
 }
@@ -31,8 +33,11 @@ func (l Lock) Err() error {
 	if err := l.err; err != nil {
 		return err
 	}
-	if l.d == nil || l.id == "" {
+	if l.ld == nil {
 		return fmt.Errorf("dsync.Lock %w", ErrInvalidState)
+	}
+	if err := l.resource.Validate(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -40,25 +45,25 @@ func (l Lock) Lock() error {
 	if err := l.Err(); err != nil {
 		return err
 	}
-	return l.d.Lock(l.id)
+	return l.ld.Lock()
 }
 func (l Lock) LockContext(ctx context.Context) error {
 	if err := l.Err(); err != nil {
 		return err
 	}
-	return l.d.LockContext(ctx, l.id)
+	return l.ld.LockContext(ctx)
 }
 func (l Lock) TryLock() error {
 	if err := l.Err(); err != nil {
 		return err
 	}
-	return l.d.TryLock(l.id)
+	return l.ld.TryLock()
 }
 func (l Lock) Unlock() error {
 	if err := l.Err(); err != nil {
 		return err
 	}
-	return l.d.Unlock(l.id)
+	return l.ld.Unlock()
 }
 func (l Lock) DoWithLock(ctx context.Context, f func() error) error {
 	if err := l.LockContext(ctx); err != nil {

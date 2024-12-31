@@ -22,17 +22,34 @@ func TestDrivers(t *testing.T) {
 		_ dsync.Driver = (*drivers.KubeDriver)(nil)
 		_ dsync.Driver = (*drivers.MockDriver)(nil)
 
-		conf = configs.New()
+		conf       = configs.New()
+		mockDriver = drivers.NewMockDriver(conf)
+		kubeDriver = newKubeDriver(t, conf)
 	)
-
-	var tests = map[string]struct{ driver dsync.Driver }{
-		"mock": {drivers.NewMockDriver(conf)},
-		"kube": {kubeDriver(t, conf)},
+	var tests = map[string]struct {
+		driver   dsync.Driver
+		lock     bool
+		election bool
+	}{
+		"mock": {
+			driver:   mockDriver,
+			lock:     true,
+			election: true,
+		},
+		"kube": {
+			driver:   kubeDriver,
+			lock:     true,
+			election: true,
+		},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			testElection(t, tc.driver)
-			testLocks(t, tc.driver)
+			if tc.lock {
+				testLocks(t, tc.driver)
+			}
+			if tc.election {
+				testElection(t, tc.driver)
+			}
 		})
 	}
 }
@@ -45,7 +62,7 @@ func testElection(t *testing.T, driver dsync.Driver) {
 		sigWhenElectedEnd   = "sigWhenElectedEnd"
 		sigElected          = "sigElected"
 	)
-	t.Run("resource", func(t *testing.T) {
+	t.Run("resource with defaults", func(t *testing.T) {
 		var (
 			d        = dsync.New(driver, podA)
 			rName    = randString(5)
@@ -58,24 +75,28 @@ func testElection(t *testing.T, driver dsync.Driver) {
 	})
 	t.Run("election with invalid resource name", func(t *testing.T) {
 		var (
-			ctx  = test.Context(t, time.Minute/4)
-			dA   = dsync.New(driver, podA)
-			task = "Bad_Name"
-			r    = dA.Resource("Bad_Name")
-			eA   = dA.Election(ctx, task)
+			ctx   = test.Context(t, time.Minute/4)
+			dA    = dsync.New(driver, podA)
+			task  = "Bad_Name"
+			r     = dA.Resource("Bad_Name")
+			eA, _ = dA.NewElection(ctx, task)
 		)
-		assert.ErrorIs(t, r.Validate(), dsync.ErrBadResourceName)
-		assert.ErrorIs(t, eA.Err(), dsync.ErrBadResourceName)
+		assert.ErrorIs(t, dsync.NewResource(task).Validate(), dsync.ErrBadResourceName)
+
+		// expect dsync to sanitize the name
+		assert.NoError(t, r.Validate())
+		assert.NoError(t, eA.Err())
+		assert.Equal(t, "bad-name", eA.Resource().Name)
 	})
 	t.Run("election IsLeader", func(t *testing.T) {
 		var (
-			ctx  = test.Context(t, time.Minute/4)
-			dA   = dsync.New(driver, podA)
-			dB   = dsync.New(driver, podB)
-			task = randString(5)
-			r    = dA.Resource(task)
-			eA   = dA.Election(ctx, task)
-			eB   = dB.Election(ctx, task)
+			ctx   = test.Context(t, time.Minute/4)
+			dA    = dsync.New(driver, podA)
+			dB    = dsync.New(driver, podB)
+			task  = randString(5)
+			r     = dA.Resource(task)
+			eA, _ = dA.NewElection(ctx, task)
+			eB, _ = dB.NewElection(ctx, task)
 		)
 
 		// both dA and dB should construct a resource the same way given the same name
@@ -85,8 +106,18 @@ func testElection(t *testing.T, driver dsync.Driver) {
 		assert.NoError(t, eB.Err())
 
 		// eventually either A or B should be elected which is not instant
-		assert.Eventually(t, func() bool {
-			return eA.GetLeader() != "" && eB.GetLeader() != ""
+		assert.EventuallyWithT(t, func(t *assert.CollectT) {
+			if assert.True(t, eA.IsLeader() || eB.IsLeader()) {
+				leader := ""
+				if eA.IsLeader() {
+					leader = podA
+				}
+				if eB.IsLeader() {
+					leader = podB
+				}
+				assert.Equal(t, leader, eA.GetLeader())
+				assert.Equal(t, leader, eB.GetLeader())
+			}
 		}, time.Minute/4, time.Second/2)
 
 		// now one and only one must be leader, we do not care which
@@ -98,11 +129,12 @@ func testElection(t *testing.T, driver dsync.Driver) {
 			ctx    = test.Context(t, time.Minute/4)
 			dA     = dsync.New(driver, podA)
 			task   = randString(5)
-			eA     = dA.Election(ctx, task)
 			sigSpy = test.NewSigSpy(ctx)
 		)
 		sigSpy.ListenAndPrint(ctx, t)
-		eA.WhenElected(func(termCtx context.Context) {
+		e, err := dA.NewElection(ctx, task)
+		require.NoError(t, err)
+		e.WhenElected(func(termCtx context.Context) {
 			require.NotNil(t, termCtx)
 			signaler.Send(ctx, sigElected)
 		})
@@ -118,7 +150,9 @@ func testElection(t *testing.T, driver dsync.Driver) {
 		)
 		sigSpy.ListenAndPrint(ctx, t)
 
-		e := d.Election(ctx, task)
+		e, err := d.NewElection(ctx, task)
+		require.NoError(t, err)
+
 		// can it handle multiple WhenElected 's ?
 		e.WhenElected(func(termCtx context.Context) {
 			signaler.Send(ctx, sigWhenElectedStart, "whenElected", "1")
@@ -137,6 +171,7 @@ func testElection(t *testing.T, driver dsync.Driver) {
 		e.Stop()
 		sigSpy.SeenEventually(t, sigWhenElectedEnd, "whenElected", "1")
 		sigSpy.SeenEventually(t, sigWhenElectedEnd, "whenElected", "2")
+		time.Sleep(time.Second)
 		assert.False(t, e.IsLeader())
 	})
 	t.Run("two elections for same pod", func(t *testing.T) {
@@ -147,10 +182,8 @@ func testElection(t *testing.T, driver dsync.Driver) {
 			sigSpy2 = test.NewSigSpy(ctx2)
 			task    = randString(8)
 
-			dA1 = dsync.New(driver, podA)
-			dA2 = dsync.New(driver, podA)
-			e1  = dA1.Election(ctx1, task)
-			e2  = dA2.Election(ctx2, task)
+			e1, _ = dsync.New(driver, podA).NewElection(ctx1, task)
+			e2, _ = dsync.New(driver, podA).NewElection(ctx2, task)
 		)
 		sigSpy1.ListenAndPrint(ctx1, t)
 		sigSpy2.ListenAndPrint(ctx2, t)
@@ -170,6 +203,8 @@ func testElection(t *testing.T, driver dsync.Driver) {
 		require.True(t, e2.IsLeader())
 
 		sigSpy2.SeenEventually(t, sigWhenElectedStart, "e", "2")
+
+		// the follow only proves that signals are isolated to their own ctx
 		sigSpy1.NotSeen(t, sigWhenElectedStart, "e", "2")
 		sigSpy2.NotSeen(t, sigWhenElectedStart, "e", "1")
 	})
@@ -178,7 +213,34 @@ func testLocks(t *testing.T, driver dsync.Driver) {
 	var (
 		podA = "A"
 		podB = "B"
+
+		sigStartLock    = "sigStartLock"
+		sigLocked       = "sigLocked"
+		sigLockCanceled = "sigLockCanceled"
 	)
+	t.Run("lock with invalid resource name", func(t *testing.T) {
+		var (
+			ctx       = test.Context(t, time.Minute/4)
+			task      = "Bad_Name"
+			ds        = dsync.New(driver, podA)
+			lock      = ds.NewLock(ctx, task)
+			targetErr = dsync.ErrBadResourceName
+		)
+		assert.ErrorIs(t, dsync.NewResource(task).Validate(), dsync.ErrBadResourceName)
+
+		// expect dsync to sanitize the name
+		require.NoError(t, lock.Err())
+		require.NoError(t, lock.TryLock())
+		require.NoError(t, lock.Unlock())
+
+		err := lock.DoWithTryLock(ctx, func() error { return nil })
+		require.NoError(t, err, targetErr)
+
+		err = lock.DoWithLock(ctx, func() error { return nil })
+		require.NoError(t, err, targetErr)
+
+		assert.Equal(t, "bad-name", lock.Resource().Name)
+	})
 	t.Run("lock", func(t *testing.T) {
 		var (
 			ctx      = test.Context(t, time.Minute/4)
@@ -201,13 +263,11 @@ func testLocks(t *testing.T, driver dsync.Driver) {
 	})
 	t.Run("lock multi pod", func(t *testing.T) {
 		var (
-			ctx          = test.Context(t, time.Minute/4)
-			dA           = dsync.New(driver, podA)
-			dB           = dsync.New(driver, podB)
-			lockName     = randString(8)
-			sigSpy       = test.NewSigSpy(ctx)
-			sigStartLock = "sigStartLock"
-			sigLocked    = "sigLocked"
+			ctx      = test.Context(t, time.Minute/4)
+			dA       = dsync.New(driver, podA)
+			dB       = dsync.New(driver, podB)
+			lockName = randString(8)
+			sigSpy   = test.NewSigSpy(ctx)
 		)
 
 		lockA := dA.NewLock(ctx, lockName)
@@ -249,14 +309,11 @@ func testLocks(t *testing.T, driver dsync.Driver) {
 		// once a lock locked with a context, canceling the context does
 		// not guarantee that the lock will be unlocked.
 		var (
-			ctx          = test.Context(t, time.Minute/4)
-			dA           = dsync.New(driver, podA)
-			dB           = dsync.New(driver, podB)
-			lockName     = randString(8)
-			sigSpy       = test.NewSigSpy(ctx)
-			sigStartLock = "sigStartLock"
-			// sigLocked    = "sigLocked"
-			sigLockCanceled = "sigLockCanceled"
+			ctx      = test.Context(t, time.Minute/4)
+			dA       = dsync.New(driver, podA)
+			dB       = dsync.New(driver, podB)
+			lockName = randString(8)
+			sigSpy   = test.NewSigSpy(ctx)
 		)
 
 		// create locks with parent context
@@ -296,18 +353,12 @@ func testLocks(t *testing.T, driver dsync.Driver) {
 	})
 	t.Run("DoWithLock", func(t *testing.T) {
 		var (
-			ctx       = test.Context(t, time.Minute/4)
-			dA        = dsync.New(driver, podA)
-			dB        = dsync.New(driver, podB)
-			lockName  = randString(8)
-			sigSpy    = test.NewSigSpy(ctx)
-			sigLocked = "sigLocked"
+			ctx      = test.Context(t, time.Minute/4)
+			sigSpy   = test.NewSigSpy(ctx)
+			lockName = randString(8)
+			lockA    = dsync.New(driver, podA).NewLock(ctx, lockName)
+			lockB    = dsync.New(driver, podB).NewLock(ctx, lockName)
 		)
-
-		lockA := dA.NewLock(ctx, lockName)
-		require.NoError(t, lockA.Err())
-		lockB := dB.NewLock(ctx, lockName)
-		require.NoError(t, lockB.Err())
 
 		err := lockA.DoWithLock(ctx, func() error {
 			signaler.Send(ctx, sigLocked, "lock", "A")
@@ -320,9 +371,74 @@ func testLocks(t *testing.T, driver dsync.Driver) {
 		require.NoError(t, lockB.TryLock())
 		require.NoError(t, lockB.Unlock())
 	})
+
+	t.Run("two locks for same resource on same pod", func(t *testing.T) {
+		var (
+			ctx  = test.Context(t, time.Minute/4)
+			name = randString(8)
+			pod  = podA
+		)
+
+		// lock1 works alone
+		lock1, err := driver.GetLock(ctx, name, pod)
+		require.NoError(t, err)
+		require.NoError(t, lock1.TryLock())
+		require.NoError(t, lock1.Unlock())
+
+		// lock2 works alone
+		lock2, err := driver.GetLock(ctx, name, pod)
+		require.NoError(t, err)
+		require.NoError(t, lock2.TryLock())
+		require.NoError(t, lock2.Unlock())
+
+		// lock1 and lock2, though different objects, are working the exact same lock
+		// if you make 2 locks for the same resource in the same pod then
+		// you are likely doing something wrong, or you accept that it is the same lock
+		// such that with lock1.Lock() locks both, and lock2.Unlock() will unlock both
+		require.NoError(t, lock1.TryLock())
+		require.ErrorIs(t, lock1.TryLock(), dsync.ErrAlreadyLocked)
+		require.ErrorIs(t, lock2.TryLock(), dsync.ErrAlreadyLocked)
+		require.NoError(t, lock2.Unlock()) // notice no error...
+		require.NoError(t, lock2.TryLock())
+		require.ErrorIs(t, lock1.TryLock(), dsync.ErrAlreadyLocked)
+		require.ErrorIs(t, lock2.TryLock(), dsync.ErrAlreadyLocked)
+		require.NoError(t, lock1.Unlock()) // notice no error...
+	})
+	t.Run("two pods trying to use the same lock", func(t *testing.T) {
+		var (
+			ctx  = test.Context(t, time.Minute/4)
+			name = randString(8)
+			podA = "A"
+			podB = "B"
+		)
+
+		// lock1 works alone
+		lock1, err := driver.GetLock(ctx, name, podA)
+		require.NoError(t, err)
+		require.NoError(t, lock1.TryLock())
+		require.NoError(t, lock1.Unlock())
+
+		// lock2 works alone
+		lock2, err := driver.GetLock(ctx, name, podB)
+		require.NoError(t, err)
+		require.NoError(t, lock2.TryLock())
+		require.NoError(t, lock2.Unlock())
+
+		// lock1 and lock2, though different objects, are working the exact same lock
+		// however only the holder of the lock can unlock it
+		require.NoError(t, lock1.TryLock())
+		require.ErrorIs(t, lock1.TryLock(), dsync.ErrAlreadyLocked)
+		require.ErrorIs(t, lock2.TryLock(), dsync.ErrAlreadyLocked)
+		require.ErrorIs(t, lock2.Unlock(), dsync.ErrNotLockHolder) // notice the error...
+		require.NoError(t, lock1.Unlock())
+		require.NoError(t, lock2.TryLock())
+		require.ErrorIs(t, lock1.TryLock(), dsync.ErrAlreadyLocked)
+		require.ErrorIs(t, lock2.TryLock(), dsync.ErrAlreadyLocked)
+		require.ErrorIs(t, lock1.Unlock(), dsync.ErrNotLockHolder) // notice the error...
+	})
 }
 
-func kubeDriver(t *testing.T, c configs.Config) *drivers.KubeDriver {
+func newKubeDriver(t *testing.T, c configs.Config) *drivers.KubeDriver {
 	cs := fake.NewClientset()
 	k, err := k8s.New(k8s.KubeWithCS(cs))
 	require.NoError(t, err)

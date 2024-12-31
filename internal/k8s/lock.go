@@ -25,6 +25,8 @@ type (
 	LockOption func(*Lock)
 )
 
+func (l *Lock) Resource() dsync.Resource { return l.r }
+func (l *Lock) Pod() string              { return l.pod }
 func (l *Lock) Holder() string {
 	if lease := l.getLease(); lease != nil {
 		if id := lease.Spec.HolderIdentity; id != nil {

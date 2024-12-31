@@ -18,7 +18,7 @@ func TestMockDriver(t *testing.T) {
 		podA                = "A"
 		podB                = "B"
 		conf                = configs.New()
-		mock                = drivers.NewMockDriver(conf)
+		driver              = drivers.NewMockDriver(conf)
 		sigWhenElectedStart = "sigWhenElectedStart"
 		sigWhenElectedEnd   = "sigWhenElectedEnd"
 	)
@@ -28,14 +28,15 @@ func TestMockDriver(t *testing.T) {
 			sigSpy = test.NewSigSpy(ctx)
 			task   = randString(8)
 
-			dA = dsync.New(mock, podA)
-			dB = dsync.New(mock, podB)
+			dA = dsync.New(driver, podA)
+			dB = dsync.New(driver, podB)
 			r  = dA.Resource(task)
 		)
 		sigSpy.ListenAndPrint(ctx, t)
 
 		// A elected first
-		eA := dA.Election(ctx, task)
+		eA, err := dA.NewElection(ctx, task)
+		require.NoError(t, err)
 		eA.WhenElected(func(termCtx context.Context) {
 			signaler.Send(ctx, sigWhenElectedStart, "pod", podA)
 			<-termCtx.Done()
@@ -43,7 +44,8 @@ func TestMockDriver(t *testing.T) {
 		})
 		sigSpy.SeenEventually(t, sigWhenElectedStart, "pod", podA)
 
-		eB := dB.Election(ctx, task)
+		eB, err := dB.NewElection(ctx, task)
+		require.NoError(t, err)
 		eB.WhenElected(func(termCtx context.Context) {
 			signaler.Send(ctx, sigWhenElectedStart, "pod", podB)
 			<-termCtx.Done()
@@ -54,14 +56,14 @@ func TestMockDriver(t *testing.T) {
 		require.False(t, eB.IsLeader())
 
 		sigSpy.Clear()
-		mock.ForceLeader(r, podB)
+		driver.ForceLeader(r, podB)
 		require.False(t, eA.IsLeader())
 		require.True(t, eB.IsLeader())
 		sigSpy.SeenEventually(t, sigWhenElectedEnd, "pod", podA)
 		sigSpy.SeenEventually(t, sigWhenElectedStart, "pod", podB)
 
 		sigSpy.Clear()
-		mock.ForceLeader(r, podA)
+		driver.ForceLeader(r, podA)
 		require.True(t, eA.IsLeader())
 		require.False(t, eB.IsLeader())
 		sigSpy.SeenEventually(t, sigWhenElectedStart, "pod", podA)

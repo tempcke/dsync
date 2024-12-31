@@ -31,18 +31,31 @@ func main() {
 	d := dsync.New(driver, conf(configs.KeyPodName))
 
 	// leader election example
-	keepTokenFresh(ctx, d)
+	if err := keepTokenFresh(ctx, d); err != nil {
+		panic(err)
+	}
 
 	// lock example, useful for job queue processing
-	accountID := envFn("ACCOUNT_ID")
-	err = checkAccount(ctx, d, accountID)
+	if err := checkAccount(ctx, d, envFn("ACCOUNT_ID")); err != nil {
+		panic(err)
+	}
+
+	// do with lock example
+	err = d.NewLock(ctx, "lockName").DoWithLock(ctx, func() error {
+		// in here we have the lock, after return it is unlocked for us
+		return nil
+	})
 	if err != nil {
 		panic(err)
 	}
 }
 
-func keepTokenFresh(ctx context.Context, d dsync.Interface) {
-	d.Election(ctx, TaskManageAccessToken).WhenElected(func(ctx context.Context) {
+func keepTokenFresh(ctx context.Context, d dsync.Interface) error {
+	e, err := d.NewElection(ctx, TaskManageAccessToken)
+	if err != nil {
+		return err
+	}
+	e.WhenElected(func(ctx context.Context) {
 		var (
 			wait     time.Duration // no wait first time
 			interval = time.Minute
@@ -59,12 +72,10 @@ func keepTokenFresh(ctx context.Context, d dsync.Interface) {
 			}
 		}
 	})
+	return nil
 }
 func checkAccount(ctx context.Context, d dsync.Interface, aID string) error {
-	var (
-		lock = d.NewLock(ctx, "check-account-"+aID)
-	)
-
+	lock := d.NewLock(ctx, "check-account-"+aID)
 	if err := lock.Lock(); err != nil {
 		return err
 	}

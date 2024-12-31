@@ -1,3 +1,9 @@
+[![build-img]][build-url]
+[![pkg-img]][pkg-url]
+[![reportcard-img]][reportcard-url]
+[![license-img]][license-url]
+
+
 # Distributed Sync (dsync)
 
 `dsync` is for distributed sync.  It aims to solve problems where coordination between different pods running the same service are required.
@@ -27,8 +33,8 @@ import (
 
 func main() {
 	var (
-		ctx       = context.Background()
-		envFn     = os.Getenv // could use viper.GetString
+		ctx   = context.Background()
+		envFn = os.Getenv // could use viper.GetString
 	)
 
 	// construct driver
@@ -44,10 +50,10 @@ func main() {
 	// if you don't check Err() all methods just no-op
 	if err := e.Err(); err != nil {
 		panic(err)
-    }
-	e.WhenElected(func(ctx context.Context){
+	}
+	e.WhenElected(func(ctx context.Context) {
 		// do stuff until ctx is canceled
-    })
+	})
 }
 ```
 
@@ -86,6 +92,7 @@ func (Lock) Lock() error
 func (Lock) LockContext(context.Context) error
 func (Lock) TryLock() error
 func (Lock) Unlock() error
+func (Lock) DoWithLock(context.Context, func() error) error
 
 type Resource struct {
 	Namespace string // optional
@@ -103,3 +110,11 @@ func (Resource) LockName() string
 * `IsLeader() bool` returns true if you are the leader.  It is important to note that it does not wait to ensure that there is a leader before returning.  It simply returns the current state and if the election hasn't finished yet, then you are not the leader yet.
 * `WhenElected(ctx, func(ctx))` will result in your function being called after every election where you transition from not being the leader, to being the leader.  The `ctx` will be canceled if at any time you stop being the leader for any reason.  So given two pods `A` and `B` and you are `A`.  If `A` is elected, then `B` is elected, then `A` elected again.  What will happen for you is your func will be called, the context will be canceled, then your func will be called again.  The context will always be canceled before a second execution can happen however it is up to you to ensure you have correctly reacted to the canceled context.
 
+[build-img]: https://github.com/tempcke/dsync/actions/workflows/test.yml/badge.svg
+[build-url]: https://github.com/tempcke/dsync/actions
+[pkg-img]: https://pkg.go.dev/badge/tempcke/dsync
+[pkg-url]: https://pkg.go.dev/github.com/tempcke/dsync
+[reportcard-img]: https://goreportcard.com/badge/tempcke/dsync
+[reportcard-url]: https://goreportcard.com/report/tempcke/dsync
+[license-img]: https://img.shields.io/github/license/tempcke/dsync
+[license-url]: https://github.com/tempcke/dsync/blob/master/LICENSE

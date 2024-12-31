@@ -76,15 +76,12 @@ func (r Resource) String() string {
 func (r Resource) Equal(r2 Resource) bool {
 	return r.String() == r2.String()
 }
+
+var validNameRE = regexp.MustCompile(NamePattern)
+
 func (r Resource) Validate() error {
-	rx, err := regexp.Compile(NamePattern)
-	if err != nil {
-		return fmt.Errorf("regex.Compile dsync.NamePattern error: %w", err)
-	}
-	for _, s := range []string{r.ElectionName()} {
-		if ok := rx.MatchString(s); !ok {
-			return ErrBadResourceName
-		}
+	if ok := validNameRE.MatchString(r.getName("validate")); !ok {
+		return ErrBadResourceName
 	}
 	return nil
 }
